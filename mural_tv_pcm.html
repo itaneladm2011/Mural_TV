@@ -51,10 +51,25 @@
   const $$ = function(sel, root){ return Array.from((root || document).querySelectorAll(sel)); };
   const esc = function(s){ return String(s == null ? "" : s).replace(/[&<>"']/g, function(c){ return ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]; }); };
 
+  // TV muitas vezes tem o relógio do sistema configurado errado (fuso UTC em vez de Brasília) --
+  // força America/Sao_Paulo explicitamente em vez de confiar no fuso do aparelho
+  const TV_TZ = "America/Sao_Paulo";
+  function pcmClockNow(){ return new Date().toLocaleTimeString("pt-BR", { timeZone: TV_TZ }); }
+  function pcmMonthLabelNow(){ return new Date().toLocaleDateString("pt-BR", { month: "long", year: "numeric", timeZone: TV_TZ }); }
+
   // formatação idêntica ao index.html (mesma fonte dos números) -- pra número bater igual no admin
   // nz() no lugar de "v ?? 0" -- nullish coalescing é recente demais pra confiar em navegador de TV
   function nz(v){ return (v === null || v === undefined) ? 0 : v; }
   const fmtBRL = function(v){ return nz(v).toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 }); };
+  // rótulo curto pra não poluir gráfico com número extenso -- ex.: 123000 -> "123K", 1250000 -> "1,3M"
+  function fmtCompactBRL(v){
+    v = nz(v);
+    const sign = v < 0 ? "-" : "";
+    const abs = Math.abs(v);
+    if(abs >= 1000000) return sign + (abs/1000000).toLocaleString("pt-BR",{maximumFractionDigits:1}) + "M";
+    if(abs >= 1000) return sign + Math.round(abs/1000) + "K";
+    return sign + Math.round(abs);
+  }
   const fmtPct = function(v){ return nz(v).toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + "%"; };
   function fmtHM(v){ v = v || 0; const sign = v<0?"-":""; v=Math.abs(v); const h=Math.floor(v), m=Math.round((v-h)*60); return sign+h+":"+String(m).padStart(2,"0"); }
   function fmtDaysSigned(v){ v = v || 0; const sign = v>0?"+":""; return sign+v.toLocaleString("pt-BR",{maximumFractionDigits:1,minimumFractionDigits:1})+" dia(s)"; }
@@ -78,7 +93,7 @@
   // barras arredondadas), montados em HTML/CSS puro (sem SVG).
   // ---------------------------------------------------------------------------------------------
   function pcmMonthLabel(){
-    const s = new Date().toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+    const s = pcmMonthLabelNow();
     return s.charAt(0).toUpperCase() + s.slice(1);
   }
   function pcmMonthBadgeHTML(){
@@ -94,19 +109,6 @@
   }
   function pcmKpiRowHTML(tiles){
     return '<div class="row-flex" style="gap:14px;flex-wrap:wrap;margin-bottom:18px">' + tiles.join("") + '</div>';
-  }
-  function pcmBarRowHTML(label, pct, valueText, barColor){
-    const safePct = Math.max(0, Math.min(100, pct));
-    return '' +
-      '<div style="padding:4px 0">' +
-        '<div class="row-flex" style="gap:14px;align-items:center">' +
-          '<div style="width:200px;flex:0 0 auto;font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(label) + '">' + esc(label) + '</div>' +
-          '<div style="flex:1;position:relative;height:18px;background:var(--surface2);border-radius:5px">' +
-            '<div style="position:absolute;left:0;top:0;bottom:0;width:' + safePct + '%;background:' + barColor + ';border-radius:5px"></div>' +
-          '</div>' +
-          '<div style="width:70px;text-align:right;font-size:13px;font-weight:800;color:' + barColor + '">' + esc(valueText) + '</div>' +
-        '</div>' +
-      '</div>';
   }
   // tabela compacta: um planta por linha, 3 métricas lado a lado (em vez de 3 blocos de barra
   // empilhados) -- é o que mais economiza altura de tela sem perder nenhum número
@@ -159,15 +161,21 @@
         '<span class="row-flex" style="gap:5px"><span style="width:9px;height:9px;border-radius:3px;background:' + colorA + '"></span>' + esc(labelA) + '</span>' +
         '<span class="row-flex" style="gap:5px"><span style="width:9px;height:9px;border-radius:3px;background:' + colorB + '"></span>' + esc(labelB) + '</span>' +
       '</div>' +
-      '<div class="row-flex" style="align-items:flex-end;gap:14px;height:100px;padding:0 4px">' +
+      '<div class="row-flex" style="align-items:flex-end;gap:14px;height:118px;padding:0 4px">' +
         items.map(function(m){
           const vA = m[keyA] || 0, vB = m[keyB] || 0;
           const hA = Math.max(3, (vA/maxValue)*72), hB = Math.max(3, (vB/maxValue)*72);
           return '' +
             '<div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-width:0">' +
-              '<div class="row-flex" style="align-items:flex-end;gap:3px;height:72px">' +
-                '<div style="width:14px;height:' + hA + 'px;background:' + colorA + ';border-radius:3px 3px 0 0" title="' + esc(labelA) + ': ' + esc(fmtFn(vA)) + '"></div>' +
-                '<div style="width:14px;height:' + hB + 'px;background:' + colorB + ';border-radius:3px 3px 0 0" title="' + esc(labelB) + ': ' + esc(fmtFn(vB)) + '"></div>' +
+              '<div class="row-flex" style="align-items:flex-end;gap:3px;height:90px">' +
+                '<div style="display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;gap:2px">' +
+                  '<div style="font-size:9px;font-weight:700;color:' + colorA + ';white-space:nowrap">' + esc(fmtFn(vA)) + '</div>' +
+                  '<div style="width:14px;height:' + hA + 'px;background:' + colorA + ';border-radius:3px 3px 0 0"></div>' +
+                '</div>' +
+                '<div style="display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;gap:2px">' +
+                  '<div style="font-size:9px;font-weight:700;color:' + colorB + ';white-space:nowrap">' + esc(fmtFn(vB)) + '</div>' +
+                  '<div style="width:14px;height:' + hB + 'px;background:' + colorB + ';border-radius:3px 3px 0 0"></div>' +
+                '</div>' +
               '</div>' +
               '<div style="font-size:10.5px;color:var(--muted)">' + esc(m.label) + '</div>' +
             '</div>';
@@ -204,10 +212,6 @@
       pcmKpiTileHTML("Falhas acima do gatilho", String(d.falhasAcimaGatilho), "dia(s) com ≥ 3h " + sub, "var(--amber)"),
     ];
     const plantas = d.plantas.slice().sort(function(a,b){ return b.disponibilidade - a.disponibilidade; });
-    // já vem limitado a 10 pela function; corta mais ainda aqui pra essa página não ficar muito
-    // mais alta que os outros slides (evita diferença grande de escala entre slides no fit-to-screen)
-    const equipTop = d.porEquipamento.slice(0, 3);
-    const maxEquip = equipTop.length ? equipTop[0].hours : 1;
     return '' +
       '<div class="card">' +
         pcmMonthBadgeHTML() +
@@ -219,8 +223,6 @@
           '<div style="flex:1"><div style="font-size:10.5px;color:var(--muted);margin-bottom:2px">Disponibilidade acumulada</div>' + pcmMonthBarsHTML(d.weeklyEvolution, "disponibilidade", fmtPct, "var(--emerald)", 100) + '</div>' +
           '<div style="flex:1"><div style="font-size:10.5px;color:var(--muted);margin-bottom:2px">Horas de falha por dia</div>' + pcmMonthBarsHTML(d.dailySeries, "hours", fmtHoursShort, "var(--rose)") + '</div>' +
         '</div>' +
-        pcmSectionTitleHTML("Top equipamentos com mais horas de falha") +
-        equipTop.map(function(e){ return pcmBarRowHTML(e.label, (e.hours/Math.max(1,maxEquip))*100, fmtHoursShort(e.hours), "var(--rose)"); }).join("") +
       '</div>';
   }
   function pcmProgramacaoSlideHTML(p, periodo){
@@ -254,7 +256,7 @@
         pcmKpiRowHTML(tiles) +
         pcmSectionTitleHTML("Evolução no ciclo — Orçado × Realizado e Aderência por mês") +
         '<div class="row-flex" style="gap:24px;align-items:flex-start">' +
-          '<div style="flex:1.3"><div style="font-size:10.5px;color:var(--muted);margin-bottom:2px">Orçado × Realizado</div>' + pcmGroupedBarsHTML(c.months, "orcado", "realizado", "Orçado", "Realizado", "var(--cyan)", "var(--emerald)", fmtBRL) + '</div>' +
+          '<div style="flex:1.3"><div style="font-size:10.5px;color:var(--muted);margin-bottom:2px">Orçado × Realizado</div>' + pcmGroupedBarsHTML(c.months, "orcado", "realizado", "Orçado", "Realizado", "var(--cyan)", "var(--emerald)", fmtCompactBRL) + '</div>' +
           '<div style="flex:1"><div style="font-size:10.5px;color:var(--muted);margin-bottom:2px">Aderência</div>' + pcmMonthBarsHTML(c.aderenciaSeries, "aderencia", fmtPct, "var(--amber)") + '</div>' +
         '</div>' +
         pcmSectionTitleHTML("Detalhamento por conta e despesa — mês atual (maiores desvios)") +
@@ -330,7 +332,7 @@
     const bodyHTML = current ? pcmSlideHTML(current.type, pcmData) : '<div class="empty"><h3>Nenhum indicador do PCM disponível ainda.</h3></div>';
     $("#root").innerHTML = '' +
       '<div id="pcmOuter" style="position:fixed;inset:0;background:var(--bg);overflow:auto;padding:18px 28px">' +
-        '<div id="pcmInner" style="max-width:1700px;margin:0 auto">' +
+        '<div id="pcmInner" style="max-width:2400px;margin:0 auto">' +
           '<div class="row-flex" style="justify-content:space-between;align-items:flex-start;margin-bottom:12px;gap:12px">' +
             '<div>' +
               '<div style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:700">Painel PCM — Fertgrow</div>' +
@@ -338,7 +340,7 @@
               (current ? '<div style="font-size:14px;color:var(--brand-light);font-weight:700;margin-top:4px">Slide ' + (slideIdx+1) + ' de ' + deck.length + ' — ' + esc(current.label) + '</div>' : '') +
             '</div>' +
             '<div class="row-flex" style="gap:16px;align-items:center;flex-wrap:wrap;justify-content:flex-end">' +
-              '<div id="pcmLiveClock" style="font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--text)">' + esc(new Date().toLocaleTimeString("pt-BR")) + '</div>' +
+              '<div id="pcmLiveClock" style="font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--text)">' + esc(pcmClockNow()) + '</div>' +
               '<label class="row-flex" style="gap:6px;align-items:center;font-size:11.5px;color:var(--muted);cursor:pointer">' +
                 '<input type="checkbox" id="pcmSlideToggle" ' + (slideMode?"checked":"") + ' /> Slides' +
               '</label>' +
@@ -352,7 +354,7 @@
           '</div>' +
           dotsHTML +
           bodyHTML +
-          '<p style="font-size:10px;color:var(--muted);margin-top:10px;text-align:center">Atualizado às ' + esc(new Date().toLocaleTimeString("pt-BR")) + '</p>' +
+          '<p style="font-size:10px;color:var(--muted);margin-top:10px;text-align:center">Atualizado às ' + esc(pcmClockNow()) + '</p>' +
         '</div>' +
       '</div>';
     $("#pcmRefreshRate").addEventListener("change", function(e){
@@ -373,6 +375,9 @@
     requestAnimationFrame(fitToScreen);
   }
 
+  // escala o conteúdo pra ocupar o espaço vertical disponível na TV -- pra os dois lados: encolhe
+  // slide muito cheio (evita cortar embaixo) e AMPLIA slide mais vazio (evita sobrar espaço morto),
+  // já que o carrossel pode rodar numa tela bem maior que o notebook onde isso foi testado
   function fitToScreen(){
     const outer = document.getElementById("pcmOuter");
     const inner = document.getElementById("pcmInner");
@@ -382,8 +387,10 @@
     inner.style.transformOrigin = "top center";
     const availableH = outer.clientHeight - 16;
     const contentH = inner.scrollHeight;
-    if(contentH > availableH){
-      const scale = Math.max(0.3, availableH / contentH);
+    if(contentH <= 0) return;
+    let scale = availableH / contentH;
+    scale = Math.max(0.35, Math.min(1.6, scale));
+    if(Math.abs(scale - 1) > 0.02){
       inner.style.transform = "scale(" + scale + ")";
       inner.style.width = (100/scale).toFixed(3) + "%";
     }
@@ -406,7 +413,7 @@
   setInterval(function(){
     secondsLeft--;
     const clockEl = document.getElementById("pcmLiveClock");
-    if(clockEl) clockEl.textContent = new Date().toLocaleTimeString("pt-BR");
+    if(clockEl) clockEl.textContent = pcmClockNow();
     let needRepaint = false;
     const deckLen = buildSlideDeck().length;
     if(slideMode && deckLen > 1){
