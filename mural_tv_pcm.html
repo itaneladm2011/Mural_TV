@@ -11,8 +11,12 @@
     --emerald:#34d399; --amber:#fbbf24; --rose:#fb7185; --cyan:#22d3ee;
   }
   *{box-sizing:border-box;}
-  html,body{height:100%;}
+  html,body{height:100%;overflow:hidden;}
   body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI',Inter,sans-serif;font-size:14px;}
+  /* o fit-to-screen já ajusta o conteúdo pra caber; a barra de rolagem é só uma rede de segurança
+     caso sobre 1-2px de arredondamento -- escondida visualmente pra não aparecer na TV */
+  #pcmOuter{scrollbar-width:none;-ms-overflow-style:none;}
+  #pcmOuter::-webkit-scrollbar{width:0;height:0;display:none;}
   .row-flex{display:flex;align-items:center;gap:8px;}
   .card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px;}
   .empty{text-align:center;color:var(--muted);padding:50px 20px;border:1px dashed var(--border);border-radius:14px;}
