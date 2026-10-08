@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Painel PCM — Fertgrow</title>
+<style>
+  :root{
+    --bg:#0a1410; --surface:#101d16; --surface2:#16261d; --border:#213328;
+    --text:#e9f2ea; --muted:#8aa08d; --brand:#0B6B33; --brand-light:#AFD676;
+    --emerald:#34d399; --amber:#fbbf24; --rose:#fb7185; --cyan:#22d3ee;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI',Inter,sans-serif;font-size:14px;}
+  .row-flex{display:flex;align-items:center;gap:8px;}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px;}
+  .empty{text-align:center;color:var(--muted);padding:50px 20px;border:1px dashed var(--border);border-radius:14px;}
+  .empty h3{color:var(--text);font-size:15px;margin-bottom:6px;}
+  select{background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:8px;font-size:13px;}
+  .pcm-kpi-tile{flex:1;min-width:190px;padding:16px 20px;}
+  .pcm-kpi-label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700;}
+  .pcm-kpi-value{font-size:30px;font-weight:800;margin-top:6px;}
+  .pcm-kpi-sub{font-size:11.5px;color:var(--muted);margin-top:4px;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+  // ---------------------------------------------------------------------------------------------
+  // Painel PCM pra TV -- página sozinha, pensada pra rodar dentro de um <iframe> num "carrossel" que
+  // alterna entre esta página e o Mural de HH, cada uma em tela cheia por um tempo fixo. Mesmo sistema
+  // visual/mecânica de slide-fit-to-screen do mural_tv.html (cópia proposital, pra não ter salto de
+  // estilo/proporção quando o carrossel troca de uma pra outra) -- só que sem nada de oficina/HH, só
+  // os indicadores do PCM.
+  //
+  // Pontos exigidos pelo carrossel (conferidos nesta página):
+  //  - Hospedagem estática (GitHub Pages) -- nenhum header/meta de X-Frame-Options ou
+  //    Content-Security-Policy frame-ancestors é definido aqui, então nada bloqueia o <iframe>.
+  //  - Sem interação necessária -- os slides trocam sozinhos (setInterval), nada exige clique.
+  //  - Layout fluido (sem tamanho fixo em pixel) -- usa %, flex-wrap e um max-width só como teto.
+  //  - Atualização de dados num intervalo generoso (ver REFRESH_MINUTES abaixo).
+  //  - JS "careful" -- evita optional chaining (?.) e nullish coalescing (??), que navegador de
+  //    Smart TV mais antigo pode não suportar (e falha calada, tela em branco sem erro visível).
+  //  - Carrega do zero toda vez -- não depende de localStorage/sessionStorage pra nada da própria tela.
+  // ---------------------------------------------------------------------------------------------
+  const SUPABASE_URL_PCM = "https://eqrzwybphzypdllywvbl.supabase.co";
+  const SUPABASE_ANON_KEY_PCM = "sb_publishable_cfftCeIOUM1xcQ_BD_0MnA_ZE4tmLVs";
+
+  const $ = function(sel, root){ return (root || document).querySelector(sel); };
+  const $$ = function(sel, root){ return Array.from((root || document).querySelectorAll(sel)); };
+  const esc = function(s){ return String(s == null ? "" : s).replace(/[&<>"']/g, function(c){ return ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]; }); };
+
+  // formatação idêntica ao index.html (mesma fonte dos números) -- pra número bater igual no admin
+  // nz() no lugar de "v ?? 0" -- nullish coalescing é recente demais pra confiar em navegador de TV
+  function nz(v){ return (v === null || v === undefined) ? 0 : v; }
+  const fmtBRL = function(v){ return nz(v).toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 }); };
+  const fmtPct = function(v){ return nz(v).toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + "%"; };
+  function fmtHM(v){ v = v || 0; const sign = v<0?"-":""; v=Math.abs(v); const h=Math.floor(v), m=Math.round((v-h)*60); return sign+h+":"+String(m).padStart(2,"0"); }
+  function fmtDaysSigned(v){ v = v || 0; const sign = v>0?"+":""; return sign+v.toLocaleString("pt-BR",{maximumFractionDigits:1,minimumFractionDigits:1})+" dia(s)"; }
+  function fmtDaysPlain(v){ v = v || 0; return v.toLocaleString("pt-BR",{maximumFractionDigits:1,minimumFractionDigits:1})+" dia(s)"; }
+  const fmtHoursShort = function(v){ return (v || 0).toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + "h"; };
+  const fmtInt = function(v){ return String(Math.round(v || 0)); };
+
+  function fetchPcmIndicadores(){
+    return fetch(SUPABASE_URL_PCM + "/functions/v1/mural-indicadores-pcm", {
+      headers: { "Authorization": "Bearer " + SUPABASE_ANON_KEY_PCM, "apikey": SUPABASE_ANON_KEY_PCM },
+    }).then(function(resp){
+      return resp.json().then(function(result){
+        if(!resp.ok || result.error || !result.ok) throw new Error(result.error || ("HTTP " + resp.status));
+        return result;
+      });
+    });
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Componentes visuais -- mesmo vocabulário do Mural (.card, var(--emerald)/var(--rose)/var(--amber),
+  // barras arredondadas), montados em HTML/CSS puro (sem SVG).
+  // ---------------------------------------------------------------------------------------------
+  function pcmMonthLabel(){
+    const s = new Date().toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+  function pcmMonthBadgeHTML(){
+    return '<div style="display:inline-block;font-size:12px;color:var(--brand-light);background:rgba(175,214,118,.12);border:1px solid rgba(175,214,118,.3);border-radius:20px;padding:3px 12px;font-weight:700;margin-bottom:14px">📅 ' + esc(pcmMonthLabel()) + '</div>';
+  }
+  function pcmKpiTileHTML(label, value, sub, color){
+    return '' +
+      '<div class="card pcm-kpi-tile">' +
+        '<div class="pcm-kpi-label">' + esc(label) + '</div>' +
+        '<div class="pcm-kpi-value" style="color:' + (color || 'var(--text)') + '">' + value + '</div>' +
+        (sub ? '<div class="pcm-kpi-sub">' + sub + '</div>' : '') +
+      '</div>';
+  }
+  function pcmKpiRowHTML(tiles){
+    return '<div class="row-flex" style="gap:14px;flex-wrap:wrap;margin-bottom:18px">' + tiles.join("") + '</div>';
+  }
+  function pcmBarRowHTML(label, pct, valueText, barColor){
+    const safePct = Math.max(0, Math.min(100, pct));
+    return '' +
+      '<div style="padding:7px 0">' +
+        '<div class="row-flex" style="gap:14px;align-items:center">' +
+          '<div style="width:220px;flex:0 0 auto;font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(label) + '">' + esc(label) + '</div>' +
+          '<div style="flex:1;position:relative;height:24px;background:var(--surface2);border-radius:6px">' +
+            '<div style="position:absolute;left:0;top:0;bottom:0;width:' + safePct + '%;background:' + barColor + ';border-radius:6px"></div>' +
+          '</div>' +
+          '<div style="width:80px;text-align:right;font-size:15px;font-weight:800;color:' + barColor + '">' + esc(valueText) + '</div>' +
+        '</div>' +
+      '</div>';
+  }
+  function pcmMonthBarsHTML(items, valueKey, fmtFn, barColor, maxOverride){
+    let maxValue = maxOverride;
+    if(!maxValue){
+      maxValue = 1;
+      items.forEach(function(m){ if((m[valueKey] || 0) > maxValue) maxValue = m[valueKey]; });
+    }
+    return '<div class="row-flex" style="align-items:flex-end;gap:16px;height:150px;margin-top:4px;padding:0 4px">' +
+      items.map(function(m){
+        const v = m[valueKey] || 0;
+        const h = Math.max(4, (v / maxValue) * 118);
+        return '' +
+          '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex:1;min-width:0">' +
+            '<div style="font-size:12px;font-weight:700;color:' + barColor + ';white-space:nowrap">' + fmtFn(v) + '</div>' +
+            '<div style="width:100%;max-width:52px;height:' + h + 'px;background:' + barColor + ';border-radius:5px 5px 0 0"></div>' +
+            '<div style="font-size:11.5px;color:var(--muted)">' + esc(m.label) + '</div>' +
+          '</div>';
+      }).join("") +
+    '</div>';
+  }
+  function pcmSectionTitleHTML(title){
+    return '<div style="font-size:12.5px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--brand-light);padding:10px 0 6px;border-top:1px solid var(--border)">' + esc(title) + '</div>';
+  }
+  function pcmGroupedBarsHTML(items, keyA, keyB, labelA, labelB, colorA, colorB, fmtFn){
+    let maxValue = 1;
+    items.forEach(function(m){ maxValue = Math.max(maxValue, m[keyA] || 0, m[keyB] || 0); });
+    return '' +
+      '<div class="row-flex" style="gap:10px;font-size:11.5px;color:var(--muted);margin:4px 0 10px">' +
+        '<span class="row-flex" style="gap:5px"><span style="width:10px;height:10px;border-radius:3px;background:' + colorA + '"></span>' + esc(labelA) + '</span>' +
+        '<span class="row-flex" style="gap:5px"><span style="width:10px;height:10px;border-radius:3px;background:' + colorB + '"></span>' + esc(labelB) + '</span>' +
+      '</div>' +
+      '<div class="row-flex" style="align-items:flex-end;gap:16px;height:150px;padding:0 4px">' +
+        items.map(function(m){
+          const vA = m[keyA] || 0, vB = m[keyB] || 0;
+          const hA = Math.max(3, (vA/maxValue)*118), hB = Math.max(3, (vB/maxValue)*118);
+          return '' +
+            '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex:1;min-width:0">' +
+              '<div class="row-flex" style="align-items:flex-end;gap:4px;height:118px">' +
+                '<div style="width:16px;height:' + hA + 'px;background:' + colorA + ';border-radius:4px 4px 0 0" title="' + esc(labelA) + ': ' + esc(fmtFn(vA)) + '"></div>' +
+                '<div style="width:16px;height:' + hB + 'px;background:' + colorB + ';border-radius:4px 4px 0 0" title="' + esc(labelB) + ': ' + esc(fmtFn(vB)) + '"></div>' +
+              '</div>' +
+              '<div style="font-size:11.5px;color:var(--muted)">' + esc(m.label) + '</div>' +
+            '</div>';
+        }).join("") +
+      '</div>';
+  }
+  function pcmTableHTML(rows){
+    if(!rows.length) return '<div style="color:var(--muted);font-size:13px;padding:8px 0">Sem lançamentos neste mês.</div>';
+    return '' +
+      '<div style="display:grid;grid-template-columns:1.6fr 1.6fr .9fr .9fr .9fr;gap:4px 14px;font-size:13px">' +
+        '<div style="color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:700">Grupo</div>' +
+        '<div style="color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:700">Conta</div>' +
+        '<div style="color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:700;text-align:right">Orçado</div>' +
+        '<div style="color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:700;text-align:right">Realizado</div>' +
+        '<div style="color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:700;text-align:right">Saldo</div>' +
+        rows.map(function(r){
+          return '' +
+            '<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(r.grupo) + '">' + esc(r.grupo) + '</div>' +
+            '<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + esc(r.conta) + '">' + esc(r.conta) + '</div>' +
+            '<div style="text-align:right;color:var(--muted)">' + esc(fmtBRL(r.orcado)) + '</div>' +
+            '<div style="text-align:right">' + esc(fmtBRL(r.realizado)) + '</div>' +
+            '<div style="text-align:right;font-weight:700;color:' + (r.saldo<0?'var(--rose)':'var(--emerald)') + '">' + esc(fmtBRL(r.saldo)) + '</div>';
+        }).join("") +
+      '</div>';
+  }
+
+  const PCM_PERIODO_SUB = { semana: "na semana", mes: "no mês" };
+  function pcmDisponibilidadeSlideHTML(d, periodo){
+    const sub = PCM_PERIODO_SUB[periodo];
+    const tiles = [
+      pcmKpiTileHTML("Disponibilidade " + sub, fmtPct(d.disponibilidade), "base: " + d.days + " dia(s) × 16h", "var(--emerald)"),
+      pcmKpiTileHTML("Horas de falha " + sub, fmtHM(d.totalHours), d.count + " registro(s) " + sub, "var(--rose)"),
+      pcmKpiTileHTML("Falhas acima do gatilho", String(d.falhasAcimaGatilho), "dia(s) com ≥ 3h " + sub, "var(--amber)"),
+    ];
+    const plantas = d.plantas.slice().sort(function(a,b){ return b.disponibilidade - a.disponibilidade; });
+    function corDisp(v){ return v >= 95 ? "var(--emerald)" : (v >= 85 ? "var(--amber)" : "var(--rose)"); }
+    const barrasDisp = plantas.map(function(p){ return pcmBarRowHTML(p.planta, p.disponibilidade, fmtPct(p.disponibilidade), corDisp(p.disponibilidade)); }).join("");
+    let maxMtbf = 1; plantas.forEach(function(p){ if(p.mtbf > maxMtbf) maxMtbf = p.mtbf; });
+    const barrasMtbf = plantas.map(function(p){ return pcmBarRowHTML(p.planta, (p.mtbf/maxMtbf)*100, fmtHoursShort(p.mtbf), "var(--cyan)"); }).join("");
+    let maxMttr = 1; plantas.forEach(function(p){ if(p.mttr > maxMttr) maxMttr = p.mttr; });
+    const barrasMttr = plantas.map(function(p){ return pcmBarRowHTML(p.planta, (p.mttr/maxMttr)*100, fmtHoursShort(p.mttr), "var(--amber)"); }).join("");
+    // já vem limitado a 10 pela function; corta mais ainda aqui pra essa página não ficar muito
+    // mais alta que os outros slides (evita diferença grande de escala entre slides no fit-to-screen)
+    const equipTop = d.porEquipamento.slice(0, 5);
+    const maxEquip = equipTop.length ? equipTop[0].hours : 1;
+    return '' +
+      '<div class="card">' +
+        pcmMonthBadgeHTML() +
+        pcmKpiRowHTML(tiles) +
+        pcmSectionTitleHTML("Disponibilidade por planta") + barrasDisp +
+        pcmSectionTitleHTML("MTBF por planta (tempo médio entre falhas)") + barrasMtbf +
+        pcmSectionTitleHTML("MTTR por planta (tempo médio de reparo)") + barrasMttr +
+        pcmSectionTitleHTML("Evolução semanal da disponibilidade (acumulado)") +
+        pcmMonthBarsHTML(d.weeklyEvolution, "disponibilidade", fmtPct, "var(--emerald)", 100) +
+        pcmSectionTitleHTML("Horas de falha por dia") +
+        pcmMonthBarsHTML(d.dailySeries, "hours", fmtHoursShort, "var(--rose)") +
+        pcmSectionTitleHTML("Horas de falha por equipamento") +
+        equipTop.map(function(e){ return pcmBarRowHTML(e.label, (e.hours/Math.max(1,maxEquip))*100, fmtHoursShort(e.hours), "var(--rose)"); }).join("") +
+      '</div>';
+  }
+  function pcmProgramacaoSlideHTML(p, periodo){
+    const sub = PCM_PERIODO_SUB[periodo];
+    const tiles = [
+      pcmKpiTileHTML("Aderência à programação", fmtPct(p.aderencia), p.executadasNoPrazo + " de " + p.programadas + " no prazo (" + sub + ")", "var(--emerald)"),
+      pcmKpiTileHTML("Fora de programação", String(p.foraDeProgramacao), fmtPct(p.pctForaDeProgramacao) + " das programadas " + sub, "var(--rose)"),
+      pcmKpiTileHTML("Desvio prog. × execução", fmtDaysSigned(p.desvioMedioDias), "média entre " + p.desvioCount + " ordem(ns) fora do prazo", "var(--amber)"),
+      pcmKpiTileHTML("Tempo médio de baixa", fmtDaysPlain(p.tempoMedioBaixaDias), "entre execução e encerramento", "var(--cyan)"),
+    ];
+    return '' +
+      '<div class="card">' +
+        pcmMonthBadgeHTML() +
+        pcmKpiRowHTML(tiles) +
+        pcmSectionTitleHTML(periodo === "semana" ? "Aderência diária" : "Aderência semanal") +
+        pcmMonthBarsHTML(p.series, "aderencia", fmtPct, "var(--emerald)", 100) +
+        pcmSectionTitleHTML("Ordens programadas × executadas no prazo") +
+        pcmGroupedBarsHTML(p.series, "programadas", "executadasNoPrazo", "Programadas", "Executadas no prazo", "var(--cyan)", "var(--emerald)", fmtInt) +
+      '</div>';
+  }
+  function pcmCustosSlideHTML(c){
+    const tiles = [
+      pcmKpiTileHTML("Orçado no mês", fmtBRL(c.mes.orcado), "previsto pra este mês", "var(--cyan)"),
+      pcmKpiTileHTML("Realizado no mês", fmtBRL(c.mes.realizado), "executado até agora neste mês", "var(--emerald)"),
+      pcmKpiTileHTML("Saldo do mês", fmtBRL(c.mes.saldo), c.mes.saldo<0 ? "orçamento do mês estourado" : "disponível a executar no mês", c.mes.saldo<0 ? "var(--rose)" : "var(--brand-light)"),
+      pcmKpiTileHTML("Aderência do mês", fmtPct(c.aderencia), "realizado ÷ orçado no mês", "var(--amber)"),
+    ];
+    return '' +
+      '<div class="card">' +
+        pcmMonthBadgeHTML() +
+        pcmKpiRowHTML(tiles) +
+        pcmSectionTitleHTML("Evolução no ciclo — Orçado × Realizado") +
+        pcmGroupedBarsHTML(c.months, "orcado", "realizado", "Orçado", "Realizado", "var(--cyan)", "var(--emerald)", fmtBRL) +
+        pcmSectionTitleHTML("Aderência por mês (ciclo)") +
+        pcmMonthBarsHTML(c.aderenciaSeries, "aderencia", fmtPct, "var(--amber)") +
+        pcmSectionTitleHTML("Detalhamento por conta e despesa — mês atual") +
+        pcmTableHTML(c.detalhamento) +
+      '</div>';
+  }
+  const PCM_SLIDE_LABEL = {
+    disponibilidade_semana: "Disponibilidade — Esta Semana",
+    disponibilidade_mes: "Disponibilidade — Este Mês",
+    programacao_semana: "Programação — Esta Semana",
+    programacao_mes: "Programação — Este Mês",
+    custos_mes: "Custos — Mês Atual",
+  };
+  function pcmSlideHTML(type, pcmData){
+    if(type === "disponibilidade_semana") return pcmDisponibilidadeSlideHTML(pcmData.disponibilidade.semana, "semana");
+    if(type === "disponibilidade_mes") return pcmDisponibilidadeSlideHTML(pcmData.disponibilidade.mes, "mes");
+    if(type === "programacao_semana") return pcmProgramacaoSlideHTML(pcmData.programacao.semana, "semana");
+    if(type === "programacao_mes") return pcmProgramacaoSlideHTML(pcmData.programacao.mes, "mes");
+    if(type === "custos_mes") return pcmCustosSlideHTML(pcmData.custos);
+    return "";
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Controlador da tela -- mesmo motor de slide-fit-to-screen do mural_tv.html, só que o deck aqui
+  // é só os indicadores do PCM (sem oficina/HH). Pensado pra ser mostrado por uns 2 minutos dentro do
+  // carrossel e depois trocado pelo Mural -- por isso o ciclo de slides é mais curto que um refresh de
+  // dado (dá pra passar pelos 5 indicadores dentro da janela de exibição).
+  // ---------------------------------------------------------------------------------------------
+  // minutos, não segundos -- a function só lê o app_state já sincronizado (não bate em Melvin/Evocon
+  // direto), mas os dados em si não mudam mais rápido que a sincronização de hora em hora do painel
+  // admin, então consultar com mais frequência que isso não traz nada de novo; mantido generoso tanto
+  // por esse motivo quanto pela mesma cautela pedida pro carrossel (evitar excesso de chamadas)
+  const REFRESH_OPTIONS_MIN = [10, 15, 20, 30];
+  const SLIDE_OPTIONS = [15, 20, 30, 45];
+  let pcmData = null;
+  let REFRESH_MINUTES = 15, secondsLeft = REFRESH_MINUTES * 60;
+  let slideMode = true, SLIDE_SECONDS = 20, slideSecondsLeft = SLIDE_SECONDS, slideIdx = 0;
+
+  function rateOptionsHTML(){
+    return REFRESH_OPTIONS_MIN.map(function(m){ return '<option value="' + m + '" ' + (m===REFRESH_MINUTES?"selected":"") + '>' + m + 'min</option>'; }).join("");
+  }
+  function slideRateOptionsHTML(){
+    return SLIDE_OPTIONS.map(function(s){ return '<option value="' + s + '" ' + (s===SLIDE_SECONDS?"selected":"") + '>' + s + 's</option>'; }).join("");
+  }
+  function fmtCountdown(totalSeconds){
+    if(totalSeconds < 60) return totalSeconds + "s";
+    return Math.ceil(totalSeconds / 60) + "min";
+  }
+
+  function buildSlideDeck(){
+    const deck = [];
+    if(pcmData && pcmData.disponibilidade){
+      deck.push({ type: "disponibilidade_semana", label: PCM_SLIDE_LABEL.disponibilidade_semana });
+      deck.push({ type: "disponibilidade_mes", label: PCM_SLIDE_LABEL.disponibilidade_mes });
+    }
+    if(pcmData && pcmData.programacao){
+      deck.push({ type: "programacao_semana", label: PCM_SLIDE_LABEL.programacao_semana });
+      deck.push({ type: "programacao_mes", label: PCM_SLIDE_LABEL.programacao_mes });
+    }
+    if(pcmData && pcmData.custos) deck.push({ type: "custos_mes", label: PCM_SLIDE_LABEL.custos_mes });
+    return deck;
+  }
+
+  function paint(){
+    const deck = buildSlideDeck();
+    if(slideIdx >= deck.length) slideIdx = 0;
+    const showingSlide = slideMode && deck.length > 0;
+    const current = showingSlide ? deck[slideIdx] : null;
+    const dotsHTML = showingSlide && deck.length > 1 ?
+      '<div class="row-flex" style="justify-content:center;gap:6px;margin-bottom:12px">' +
+        deck.map(function(s,i){ return '<div title="' + esc(s.label) + '" style="width:' + (i===slideIdx?'22px':'8px') + ';height:8px;border-radius:4px;background:' + (i===slideIdx?'var(--brand-light)':'var(--border)') + '"></div>'; }).join("") +
+      '</div>' : "";
+    const bodyHTML = current ? pcmSlideHTML(current.type, pcmData) : '<div class="empty"><h3>Nenhum indicador do PCM disponível ainda.</h3></div>';
+    $("#root").innerHTML = '' +
+      '<div id="pcmOuter" style="position:fixed;inset:0;background:var(--bg);overflow:auto;padding:28px 36px">' +
+        '<div id="pcmInner" style="max-width:1700px;margin:0 auto">' +
+          '<div class="row-flex" style="justify-content:space-between;align-items:flex-start;margin-bottom:20px;gap:12px">' +
+            '<div>' +
+              '<div style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:700">Painel PCM — Fertgrow</div>' +
+              '<div style="font-size:26px;font-weight:800;margin-top:4px">Indicadores de Manutenção</div>' +
+              (current ? '<div style="font-size:14px;color:var(--brand-light);font-weight:700;margin-top:4px">Slide ' + (slideIdx+1) + ' de ' + deck.length + ' — ' + esc(current.label) + '</div>' : '') +
+            '</div>' +
+            '<div class="row-flex" style="gap:16px;align-items:center;flex-wrap:wrap;justify-content:flex-end">' +
+              '<div id="pcmLiveClock" style="font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--text)">' + esc(new Date().toLocaleTimeString("pt-BR")) + '</div>' +
+              '<label class="row-flex" style="gap:6px;align-items:center;font-size:11.5px;color:var(--muted);cursor:pointer">' +
+                '<input type="checkbox" id="pcmSlideToggle" ' + (slideMode?"checked":"") + ' /> Slides' +
+              '</label>' +
+              (slideMode ? '<div class="row-flex" style="gap:6px;align-items:center"><select id="pcmSlideRate" title="Troca de slide a cada">' + slideRateOptionsHTML() + '</select></div>' : '') +
+              '<div class="row-flex" style="gap:8px;align-items:center">' +
+                '<label for="pcmRefreshRate" style="font-size:11.5px;color:var(--muted)">Atualiza a cada</label>' +
+                '<select id="pcmRefreshRate">' + rateOptionsHTML() + '</select>' +
+              '</div>' +
+              '<div style="font-size:12.5px;color:var(--muted)">🔄 próxima em <span id="pcmCountdown" style="color:var(--brand-light);font-weight:700">' + fmtCountdown(secondsLeft) + '</span></div>' +
+            '</div>' +
+          '</div>' +
+          dotsHTML +
+          bodyHTML +
+          '<p style="font-size:10.5px;color:var(--muted);margin-top:20px;text-align:center">Atualizado às ' + esc(new Date().toLocaleTimeString("pt-BR")) + '</p>' +
+        '</div>' +
+      '</div>';
+    $("#pcmRefreshRate").addEventListener("change", function(e){
+      REFRESH_MINUTES = Number(e.target.value) || 15;
+      secondsLeft = REFRESH_MINUTES * 60;
+    });
+    $("#pcmSlideToggle").addEventListener("change", function(e){
+      slideMode = e.target.checked;
+      slideIdx = 0;
+      slideSecondsLeft = SLIDE_SECONDS;
+      paint();
+    });
+    const slideRateSel = $("#pcmSlideRate");
+    if(slideRateSel) slideRateSel.addEventListener("change", function(e){
+      SLIDE_SECONDS = Number(e.target.value) || 20;
+      slideSecondsLeft = SLIDE_SECONDS;
+    });
+    requestAnimationFrame(fitToScreen);
+  }
+
+  function fitToScreen(){
+    const outer = document.getElementById("pcmOuter");
+    const inner = document.getElementById("pcmInner");
+    if(!outer || !inner) return;
+    inner.style.transform = "";
+    inner.style.width = "";
+    inner.style.transformOrigin = "top center";
+    const availableH = outer.clientHeight - 16;
+    const contentH = inner.scrollHeight;
+    if(contentH > availableH){
+      const scale = Math.max(0.4, availableH / contentH);
+      inner.style.transform = "scale(" + scale + ")";
+      inner.style.width = (100/scale).toFixed(3) + "%";
+    }
+  }
+
+  function refresh(){
+    fetchPcmIndicadores().then(function(result){
+      pcmData = result;
+    }).catch(function(err){
+      // falha momentânea (rede, function fora do ar) -- mantém o último dado bom na tela, tenta
+      // de novo no próximo ciclo; não existe fallback pra "sem dado nenhum ainda" além da tela vazia
+    }).then(function(){
+      secondsLeft = REFRESH_MINUTES * 60;
+      paint();
+    });
+  }
+
+  window.addEventListener("resize", fitToScreen);
+  refresh();
+  setInterval(function(){
+    secondsLeft--;
+    const clockEl = document.getElementById("pcmLiveClock");
+    if(clockEl) clockEl.textContent = new Date().toLocaleTimeString("pt-BR");
+    let needRepaint = false;
+    const deckLen = buildSlideDeck().length;
+    if(slideMode && deckLen > 1){
+      slideSecondsLeft--;
+      if(slideSecondsLeft <= 0){
+        slideIdx = (slideIdx + 1) % deckLen;
+        slideSecondsLeft = SLIDE_SECONDS;
+        needRepaint = true;
+      }
+    }
+    if(secondsLeft <= 0){ refresh(); return; }
+    if(needRepaint){ paint(); return; }
+    const el = document.getElementById("pcmCountdown");
+    if(el) el.textContent = fmtCountdown(secondsLeft); else paint();
+  }, 1000);
+</script>
+</body>
+</html>
