@@ -59,6 +59,7 @@
   // força America/Sao_Paulo explicitamente em vez de confiar no fuso do aparelho
   const TV_TZ = "America/Sao_Paulo";
   function pcmClockNow(){ return new Date().toLocaleTimeString("pt-BR", { timeZone: TV_TZ }); }
+  function pcmClockHM(date){ return (date || new Date()).toLocaleTimeString("pt-BR", { timeZone: TV_TZ, hour: "2-digit", minute: "2-digit" }); }
   function pcmMonthLabelNow(){ return new Date().toLocaleDateString("pt-BR", { month: "long", year: "numeric", timeZone: TV_TZ }); }
 
   // formatação idêntica ao index.html (mesma fonte dos números) -- pra número bater igual no admin
@@ -296,6 +297,7 @@
   const REFRESH_OPTIONS_MIN = [10, 15, 20, 30];
   const SLIDE_OPTIONS = [15, 20, 30, 45];
   let pcmData = null;
+  let lastConsultadoEm = null; // quando a última consulta ao Melvin (via nossa function) teve sucesso
   let REFRESH_MINUTES = 15, secondsLeft = REFRESH_MINUTES * 60;
   let slideMode = true, SLIDE_SECONDS = 20, slideSecondsLeft = SLIDE_SECONDS, slideIdx = 0;
 
@@ -305,11 +307,6 @@
   function slideRateOptionsHTML(){
     return SLIDE_OPTIONS.map(function(s){ return '<option value="' + s + '" ' + (s===SLIDE_SECONDS?"selected":"") + '>' + s + 's</option>'; }).join("");
   }
-  function fmtCountdown(totalSeconds){
-    if(totalSeconds < 60) return totalSeconds + "s";
-    return Math.ceil(totalSeconds / 60) + "min";
-  }
-
   function buildSlideDeck(){
     const deck = [];
     if(pcmData && pcmData.disponibilidade){
@@ -353,12 +350,11 @@
                 '<label for="pcmRefreshRate" style="font-size:11.5px;color:var(--muted)">Atualiza a cada</label>' +
                 '<select id="pcmRefreshRate">' + rateOptionsHTML() + '</select>' +
               '</div>' +
-              '<div style="font-size:12.5px;color:var(--muted)">🔄 próxima em <span id="pcmCountdown" style="color:var(--brand-light);font-weight:700">' + fmtCountdown(secondsLeft) + '</span></div>' +
+              '<div style="font-size:12px;color:var(--muted);text-align:right;line-height:1.5">Melvin consultado às: <b style="color:var(--brand-light)">' + esc(lastConsultadoEm ? pcmClockHM(lastConsultadoEm) : "—") + '</b><br>Próxima consulta ao Melvin: <b style="color:var(--brand-light)">' + esc(lastConsultadoEm ? pcmClockHM(new Date(lastConsultadoEm.getTime() + REFRESH_MINUTES*60000)) : "—") + '</b></div>' +
             '</div>' +
           '</div>' +
           dotsHTML +
           bodyHTML +
-          '<p style="font-size:10px;color:var(--muted);margin-top:10px;text-align:center">Atualizado às ' + esc(pcmClockNow()) + '</p>' +
         '</div>' +
       '</div>';
     $("#pcmRefreshRate").addEventListener("change", function(e){
@@ -403,6 +399,7 @@
   function refresh(){
     fetchPcmIndicadores().then(function(result){
       pcmData = result;
+      lastConsultadoEm = new Date();
     }).catch(function(err){
       // falha momentânea (rede, function fora do ar) -- mantém o último dado bom na tela, tenta
       // de novo no próximo ciclo; não existe fallback pra "sem dado nenhum ainda" além da tela vazia
@@ -429,9 +426,9 @@
       }
     }
     if(secondsLeft <= 0){ refresh(); return; }
-    if(needRepaint){ paint(); return; }
-    const el = document.getElementById("pcmCountdown");
-    if(el) el.textContent = fmtCountdown(secondsLeft); else paint();
+    if(needRepaint){ paint(); }
+    // "Melvin consultado às" / "Próxima consulta" só mudam quando refresh() roda de verdade (acima);
+    // não precisam de atualização por segundo como o relógio, que já é tratado à parte logo ali em cima
   }, 1000);
 </script>
 </body>
